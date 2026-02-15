@@ -36,9 +36,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            artifact: libnpcs.so
+            target-path: target/release/libnpcs.so
+          - os: windows-latest
+            artifact: npcs.dll
+            target-path: target/release/npcs.dll
+          - os: macos-latest
+            artifact: libnpcs.dylib
+            target-path: target/release/libnpcs.dylib
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.target-path }}
