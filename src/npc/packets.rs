@@ -128,12 +128,14 @@ pub async fn spawn_npc_for_player(npc: &Npc, player: &Arc<Player>) {
     };
 
     // 1. CPlayerInfoUpdate - ADD_PLAYER | UPDATE_LISTED (listed = false to hide from tab)
+    // Minecraft protocol limits player names to 16 characters
+    let protocol_name: String = npc.name.chars().take(16).collect();
     let actions = (PlayerInfoFlags::ADD_PLAYER | PlayerInfoFlags::UPDATE_LISTED).bits();
     let protocol_player = ProtocolPlayer {
         uuid: npc.uuid,
         actions: &[
             PlayerAction::AddPlayer {
-                name: &npc.name,
+                name: &protocol_name,
                 properties: &properties,
             },
             PlayerAction::UpdateListed(false),
