@@ -11,9 +11,9 @@ use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_protocol::java::client::play::{CSetEntityMetadata, Metadata};
 use pumpkin_util::text::TextComponent;
 use serde::Deserialize;
+use std::sync::RwLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
 use crate::{CONTEXT, DATA_FOLDER, REGISTRY};
@@ -177,7 +177,7 @@ pub fn resolve_placeholders(text: &str, server_name: &str) -> String {
     };
 
     let status = {
-        let guard = status_map.blocking_read();
+        let guard = status_map.read().unwrap();
         guard.get(server_name).cloned().unwrap_or_default()
     };
 
@@ -278,7 +278,7 @@ pub fn start_status_task() {
 
             // Update the shared status map
             {
-                let mut map = status_map.write().await;
+                let mut map = status_map.write().unwrap();
                 *map = new_statuses;
             }
 
