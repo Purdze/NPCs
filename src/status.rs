@@ -23,6 +23,13 @@ const PING_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 static STATUS: OnceLock<Arc<RwLock<HashMap<String, ServerStatus>>>> = OnceLock::new();
+static SERVERS: OnceLock<Arc<RwLock<HashMap<String, SocketAddr>>>> = OnceLock::new();
+
+fn servers() -> Arc<RwLock<HashMap<String, SocketAddr>>> {
+    SERVERS
+        .get_or_init(|| Arc::new(RwLock::new(load_servers_config())))
+        .clone()
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct ServerStatus {
@@ -42,7 +49,6 @@ struct ServerEntry {
     address: String,
 }
 
-/// Write a VarInt to a buffer and return how many bytes were written.
 fn write_varint(buf: &mut Vec<u8>, mut value: i32) {
     loop {
         let mut byte = (value & 0x7F) as u8;
@@ -57,7 +63,6 @@ fn write_varint(buf: &mut Vec<u8>, mut value: i32) {
     }
 }
 
-/// Read a VarInt from an async reader.
 async fn read_varint<R: tokio::io::AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<i32> {
     let mut result: i32 = 0;
     let mut shift = 0;
@@ -78,31 +83,25 @@ async fn read_varint<R: tokio::io::AsyncRead + Unpin>(reader: &mut R) -> std::io
     Ok(result)
 }
 
-/// Ping a Minecraft server using the Server List Ping protocol.
-/// Returns `None` on connection failure or protocol error.
 async fn ping_server(addr: SocketAddr) -> Option<ServerStatus> {
     let mut stream = timeout(PING_TIMEOUT, TcpStream::connect(addr))
         .await
         .ok()?
         .ok()?;
 
-    // Build Handshake packet (id=0x00)
     let mut handshake_data = Vec::new();
-    write_varint(&mut handshake_data, 0x00); // packet id
-    write_varint(&mut handshake_data, -1); // protocol version (-1 = ping)
-                                           // server address as string
+    write_varint(&mut handshake_data, 0x00);
+    write_varint(&mut handshake_data, -1);
     let host = addr.ip().to_string();
     write_varint(&mut handshake_data, host.len() as i32);
     handshake_data.extend_from_slice(host.as_bytes());
     handshake_data.extend_from_slice(&addr.port().to_be_bytes());
-    write_varint(&mut handshake_data, 1); // next state = Status
+    write_varint(&mut handshake_data, 1);
 
-    // Send handshake: length-prefixed
     let mut packet = Vec::new();
     write_varint(&mut packet, handshake_data.len() as i32);
     packet.extend_from_slice(&handshake_data);
 
-    // Status Request packet (id=0x00, no fields)
     let mut status_req = Vec::new();
     write_varint(&mut status_req, 0x00);
     let mut status_packet = Vec::new();
@@ -116,7 +115,6 @@ async fn ping_server(addr: SocketAddr) -> Option<ServerStatus> {
         .ok()?
         .ok()?;
 
-    // Read Status Response
     let _length = timeout(PING_TIMEOUT, read_varint(&mut stream))
         .await
         .ok()?
@@ -145,14 +143,10 @@ async fn ping_server(addr: SocketAddr) -> Option<ServerStatus> {
 
     let json_str = String::from_utf8(json_buf).ok()?;
 
-    // Parse the JSON to extract player counts
-    // Format: {"players":{"max":20,"online":3,...},...}
     parse_slp_json(&json_str)
 }
 
-/// Parse the SLP JSON response to extract player counts.
 fn parse_slp_json(json: &str) -> Option<ServerStatus> {
-    // Minimal JSON parsing — look for "players" object with "online" and "max"
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let players = v.get("players")?;
     let online = players.get("online")?.as_u64()? as u32;
@@ -165,7 +159,6 @@ fn parse_slp_json(json: &str) -> Option<ServerStatus> {
     })
 }
 
-/// Replace placeholder tokens in hologram text with live server status.
 pub fn resolve_placeholders(text: &str, server_name: &str) -> String {
     if !text.contains('{') {
         return text.to_string();
@@ -200,12 +193,10 @@ pub fn resolve_placeholders(text: &str, server_name: &str) -> String {
         .replace("{max}", &max_str)
 }
 
-/// Returns true if the text contains any server status placeholders.
 pub fn has_placeholders(text: &str) -> bool {
     text.contains("{status}") || text.contains("{online}") || text.contains("{max}")
 }
 
-/// Send a metadata update to change a hologram's custom name for a single player.
 async fn update_hologram_text(entity_id: i32, text: &str, player: &Arc<Player>) {
     let ClientPlatform::Java(java) = &player.client else {
         return;
@@ -224,7 +215,7 @@ async fn update_hologram_text(entity_id: i32, text: &str, player: &Arc<Player>) 
         return;
     }
 
-    meta_buf.put_u8(0xFF); // terminator
+    meta_buf.put_u8(0xFF);
 
     let packet = CSetEntityMetadata::new(VarInt(entity_id), meta_buf.into_boxed_slice());
 
@@ -239,58 +230,109 @@ async fn update_hologram_text(entity_id: i32, text: &str, player: &Arc<Player>) 
     }
 }
 
-/// Start the background task that periodically pings servers and updates holograms.
+pub fn add_server(name: String, addr: SocketAddr) {
+    let servers = servers();
+
+    {
+        let mut map = servers.write().unwrap();
+        map.insert(name, addr);
+        save_servers_config(&map);
+    }
+
+    // Ensure the status task is running
+    start_status_task();
+}
+
+pub fn remove_server(name: &str) -> bool {
+    let servers = servers();
+
+    let mut map = servers.write().unwrap();
+    let removed = map.remove(name).is_some();
+    if removed {
+        save_servers_config(&map);
+    }
+    removed
+}
+
+pub fn has_server(name: &str) -> bool {
+    let servers = servers();
+
+    let result = servers.read().unwrap().contains_key(name);
+    result
+}
+
+pub fn list_servers() -> Vec<(String, SocketAddr, ServerStatus)> {
+    let servers = servers();
+
+    let server_map = servers.read().unwrap();
+    let statuses = STATUS.get().map(|s| s.read().unwrap().clone());
+
+    let mut result: Vec<_> = server_map
+        .iter()
+        .map(|(name, addr)| {
+            let status = statuses
+                .as_ref()
+                .and_then(|s| s.get(name).cloned())
+                .unwrap_or_default();
+            (name.clone(), *addr, status)
+        })
+        .collect();
+    result.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+    result
+}
+
 pub fn start_status_task() {
-    let config = load_servers_config();
-    if config.is_empty() {
-        log::info!("No servers.toml found or no servers configured — status holograms disabled");
+    let servers = servers();
+
+    // Don't spawn if there are no servers yet
+    if servers.read().unwrap().is_empty() {
         return;
     }
 
+    // STATUS being already set means the task is already running
     let status_map = Arc::new(RwLock::new(HashMap::new()));
-    STATUS.set(Arc::clone(&status_map)).ok();
+    if STATUS.set(Arc::clone(&status_map)).is_err() {
+        return;
+    }
 
-    log::info!(
-        "Status holograms enabled for {} server(s): {}",
-        config.len(),
-        config.keys().cloned().collect::<Vec<_>>().join(", ")
-    );
+    let server_count = servers.read().unwrap().len();
+    log::info!("Status holograms enabled for {server_count} server(s)");
 
     tokio::spawn(async move {
         loop {
-            // Ping all servers concurrently
-            let mut handles = Vec::new();
-            for (name, addr) in &config {
-                let name = name.clone();
-                let addr = *addr;
-                handles.push(tokio::spawn(async move {
-                    let status = ping_server(addr).await.unwrap_or_default();
-                    (name, status)
-                }));
-            }
+            let config: HashMap<String, SocketAddr> = servers.read().unwrap().clone();
 
-            let mut new_statuses = HashMap::new();
-            for handle in handles {
-                if let Ok((name, status)) = handle.await {
-                    new_statuses.insert(name, status);
+            if !config.is_empty() {
+                let mut handles = Vec::new();
+                for (name, addr) in &config {
+                    let name = name.clone();
+                    let addr = *addr;
+                    handles.push(tokio::spawn(async move {
+                        let status = ping_server(addr).await.unwrap_or_default();
+                        (name, status)
+                    }));
                 }
-            }
 
-            // Update the shared status map
-            {
-                let mut map = status_map.write().unwrap();
-                *map = new_statuses;
-            }
+                let mut new_statuses = HashMap::new();
+                for handle in handles {
+                    if let Ok((name, status)) = handle.await {
+                        new_statuses.insert(name, status);
+                    }
+                }
 
-            // Push hologram updates to all online players
-            push_hologram_updates().await;
+                {
+                    let mut map = status_map.write().unwrap();
+                    *map = new_statuses;
+                }
+
+                push_hologram_updates().await;
+            }
 
             tokio::time::sleep(POLL_INTERVAL).await;
         }
     });
 }
 
-/// Push hologram text updates to all online players for NPCs that have placeholders.
 async fn push_hologram_updates() {
     let context = match CONTEXT.get() {
         Some(c) => c,
@@ -329,7 +371,24 @@ async fn push_hologram_updates() {
     }
 }
 
-/// Load the servers.toml config file, returning a map of server name -> socket address.
+fn save_servers_config(servers: &HashMap<String, SocketAddr>) {
+    let path = DATA_FOLDER
+        .get()
+        .expect("Data folder not initialized")
+        .join(SERVERS_FILE);
+
+    let mut toml_str = String::new();
+    let mut sorted: Vec<_> = servers.iter().collect();
+    sorted.sort_by_key(|(name, _)| (*name).clone());
+    for (name, addr) in sorted {
+        toml_str.push_str(&format!("[{name}]\naddress = \"{addr}\"\n\n"));
+    }
+
+    if let Err(e) = std::fs::write(path, toml_str) {
+        log::error!("Failed to write {SERVERS_FILE}: {e}");
+    }
+}
+
 fn load_servers_config() -> HashMap<String, SocketAddr> {
     let path = DATA_FOLDER
         .get()

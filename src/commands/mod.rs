@@ -13,7 +13,6 @@ use pumpkin::entity::player::Player;
 
 use crate::npc::Npc;
 
-/// Find the NPC closest to the player's crosshair within a ~25° cone and 32 blocks.
 pub fn find_npc_in_crosshair(player: &Player, npcs: &[Npc]) -> Option<u32> {
     let pos = player.living_entity.entity.pos.load();
     let yaw = player.living_entity.entity.yaw.load();
@@ -66,7 +65,20 @@ pub fn build_npc_command() -> CommandTree {
         .then(literal("looknear").execute(looknear::LookNearExecutor))
         .then(
             literal("server")
-                .then(argument("server", SimpleArgConsumer).execute(server::ServerExecutor)),
+                .then(
+                    literal("add").then(argument("name", SimpleArgConsumer).then(
+                        argument("address", SimpleArgConsumer).execute(server::ServerAddExecutor),
+                    )),
+                )
+                .then(literal("remove").then(
+                    argument("name", SimpleArgConsumer).execute(server::ServerRemoveExecutor),
+                ))
+                .then(literal("list").execute(server::ServerListExecutor))
+                .then(
+                    literal("set").then(
+                        argument("name", SimpleArgConsumer).execute(server::ServerSetExecutor),
+                    ),
+                ),
         )
         .then(
             literal("hologram").then(

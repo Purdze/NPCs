@@ -16,14 +16,24 @@ A plugin for [Pumpkin](https://github.com/Pumpkin-MC/Pumpkin) that adds persiste
 
 All commands are under `/npc` and require the `npcs:npc` permission (OP level 2).
 
+### NPC Management
+
 | Command | Description |
 |---|---|
-| `/npc create <name>` | Create an NPC at your position. The skin is fetched from the Mojang API using `<name>` as the player username. |
+| `/npc create <name>` | Create an NPC at your position. Skin is fetched from the Mojang API using `<name>` as the player username. |
 | `/npc remove <id>` | Remove an NPC by its ID. |
 | `/npc list` | List all NPCs with their IDs and positions. |
 | `/npc looknear` | Toggle look-at-nearest-player for the NPC in your crosshair. |
 | `/npc hologram add <text>` | Add a hologram line above the NPC in your crosshair. |
-| `/npc server <server>` | Assign a server to the NPC in your crosshair. Players who click the NPC will be transferred to that server via [Gourd](https://github.com/Purdze/gourd). |
+
+### Server Management
+
+| Command | Description |
+|---|---|
+| `/npc server add <name> <address>` | Register a server (saved to `servers.toml`, starts status polling). |
+| `/npc server remove <name>` | Unregister a server. |
+| `/npc server list` | List all servers with their live status. |
+| `/npc server set <name>` | Assign a registered server to the NPC in your crosshair. Players who click the NPC will be transferred via [Gourd](https://github.com/Purdze/Gourd). |
 
 > Commands that target "the NPC in your crosshair" use a ~25 degree cone within 32 blocks.
 
@@ -37,7 +47,7 @@ Auto-managed by the plugin. Contains all NPC definitions. You generally don't ne
 
 ### servers.toml
 
-Optional. Define servers for status placeholders and NPC transfers. Each entry maps a server name to its address:
+Auto-managed by the plugin. Created automatically when you use `/npc server add`. Each entry maps a server name to its address:
 
 ```toml
 [lobby]
@@ -55,14 +65,16 @@ When an NPC has an assigned server, its hologram text can use these placeholders
 
 | Placeholder | Value |
 |---|---|
-| `{status}` | `§aOnline` or `§cOffline` |
+| `{status}` | "Online" (green) or "Offline" (red) |
 | `{online}` | Current player count |
 | `{max}` | Max player count |
 
 **Example:**
 
 ```
-/npc server lobby
+/npc server add lobby 127.0.0.1:25566
+/npc create Lobby
+/npc server set lobby
 /npc hologram add Lobby
 /npc hologram add {status} - {online}/{max}
 ```
